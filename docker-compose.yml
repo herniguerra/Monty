@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  monty:
+    build: .
+    container_name: monty_app
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    environment:
+      - FLASK_APP=app
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+    env_file:
+      - .env
+    restart: unless-stopped

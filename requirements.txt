@@ -1,0 +1,11 @@
+Flask
+Flask-SQLAlchemy
+Flask-APScheduler
+python-dotenv
+google-genai
+pydantic
+ccxt
+newsapi-python
+praw
+requests
+gunicorn

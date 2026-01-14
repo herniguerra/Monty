@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monty — Trading Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">🎩</span>
+                    <span>Monty</span>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a class="nav-item active" data-page="dashboard">
+                    <span>📊</span> Dashboard
+                </a>
+                <a class="nav-item" data-page="chat">
+                    <span>💬</span> Chat with Monty
+                </a>
+                <a class="nav-item" data-page="trades">
+                    <span>📋</span> Trade Queue
+                </a>
+                <a class="nav-item" data-page="positions">
+                    <span>💼</span> Positions
+                </a>
+                <a class="nav-item" data-page="strategies">
+                    <span>⚙️</span> Strategies
+                </a>
+                <a class="nav-item" data-page="logs">
+                    <span>📜</span> Logs
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main">
+            <header class="header">
+                <h1 class="page-title" id="page-title">Dashboard</h1>
+                <div class="header-actions">
+                    <button class="btn" onclick="runScan()">🔍 Run Scan</button>
+                    <button class="btn btn-primary" onclick="refreshData()">↻ Refresh</button>
+                </div>
+            </header>
+
+            <div class="content" id="content">
+                <!-- Dashboard View -->
+                <div id="dashboard-view">
+                    <!-- Stats Grid -->
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Portfolio Value</div>
+                            <div class="stat-value" id="portfolio-value">$10,000.00</div>
+                            <div class="stat-change positive" id="portfolio-change">+0.00%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Total P&L</div>
+                            <div class="stat-value positive" id="total-pnl">$0.00</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Open Positions</div>
+                            <div class="stat-value" id="open-positions">0</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Pending Trades</div>
+                            <div class="stat-value" id="pending-trades">0</div>
+                        </div>
+                    </div>
+
+                    <!-- Two Column Layout -->
+                    <div class="two-columns">
+                        <!-- Trade Queue Preview -->
+                        <div class="card">
+                            <div class="card-header">
+                                <span class="card-title">Pending Approvals</span>
+                                <button class="btn" onclick="showPage('trades')">View All</button>
+                            </div>
+                            <div class="trade-queue" id="trade-queue-preview">
+                                <div class="empty-state">
+                                    <div class="empty-state-icon">😴</div>
+                                    <div class="empty-state-text">No pending trades. Monty is watching the market...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Recent Log -->
+                        <div class="card">
+                            <div class="card-header">
+                                <span class="card-title">Monty's Diary</span>
+                            </div>
+                            <div class="log-panel" id="log-panel">
+                                <div class="log-entry info">
+                                    <span class="timestamp">[--:--:--]</span> Waiting for first scan...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trade Queue View (hidden by default) -->
+                <div id="trades-view" style="display: none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Trade Queue</span>
+                        </div>
+                        <div class="trade-queue" id="trade-queue-full">
+                            <div class="empty-state">
+                                <div class="empty-state-icon">📭</div>
+                                <div class="empty-state-text">No pending trades</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Positions View (hidden by default) -->
+                <div id="positions-view" style="display: none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Open Positions</span>
+                        </div>
+                        <table class="positions-table">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Entry Price</th>
+                                    <th>Quantity</th>
+                                    <th>Value</th>
+                                    <th>P&L</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="positions-table-body">
+                                <tr>
+                                    <td colspan="6" style="text-align: center; color: var(--text-muted);">
+                                        No open positions
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Strategies View (hidden by default) -->
+                <div id="strategies-view" style="display: none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Strategy Modules</span>
+                        </div>
+                        <div class="strategy-list" id="strategy-list">
+                            <div class="strategy-item">
+                                <div class="strategy-info">
+                                    <span class="strategy-name">📉 RSI Dip Buyer</span>
+                                    <span class="strategy-desc">Buys when RSI indicates oversold conditions</span>
+                                </div>
+                                <div class="toggle active" onclick="toggleStrategy(this, 'rsi_dip')"></div>
+                            </div>
+                            <div class="strategy-item">
+                                <div class="strategy-info">
+                                    <span class="strategy-name">📰 Sentiment Surfer</span>
+                                    <span class="strategy-desc">Trades based on news sentiment shifts</span>
+                                </div>
+                                <div class="toggle active" onclick="toggleStrategy(this, 'sentiment_surge')"></div>
+                            </div>
+                            <div class="strategy-item">
+                                <div class="strategy-info">
+                                    <span class="strategy-name">🚀 Moonshot Scanner</span>
+                                    <span class="strategy-desc">Scans for breakout opportunities (HIGH RISK)</span>
+                                </div>
+                                <div class="toggle" onclick="toggleStrategy(this, 'moonshot_scanner')"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat View (hidden by default) -->
+                <div id="chat-view" style="display: none;">
+                    <div class="chat-container">
+                        <div class="chat-messages" id="chat-messages">
+                            <div class="chat-message assistant">
+                                <div class="chat-avatar">🎩</div>
+                                <div class="chat-bubble">
+                                    Hey there! I'm Monty, your trading assistant. 👋
+                                    <br><br>
+                                    I can help you with:
+                                    <ul>
+                                        <li>Check current prices: <em>"What's the price of ETH?"</em></li>
+                                        <li>View your portfolio: <em>"Show me my positions"</em></li>
+                                        <li>Analyze sentiment: <em>"What's the market mood?"</em></li>
+                                        <li>Propose trades: <em>"Should I buy some SOL?"</em></li>
+                                    </ul>
+                                    What would you like to know?
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chat-input-container">
+                            <input type="text" id="chat-input" class="chat-input" placeholder="Ask Monty anything..."
+                                onkeypress="handleChatKeypress(event)">
+                            <button class="btn" onclick="showContextDebug()" title="View Monty's Context">🔍
+                                Context</button>
+                            <button class="btn" onclick="exportChatAsMarkdown()" title="Export as Markdown">📥
+                                Export</button>
+                            <button class="btn btn-primary" onclick="sendChatMessage()">Send</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Logs View (hidden by default) -->
+                <div id="logs-view" style="display: none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Full Activity Log</span>
+                            <button class="btn" onclick="clearLogs()">Clear</button>
+                        </div>
+                        <div class="log-panel" id="log-panel-full" style="max-height: 600px;">
+                            <div class="log-entry info">
+                                <span class="timestamp">[--:--:--]</span> Log initialized
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Context Debug Modal -->
+    <div id="context-modal" class="modal" style="display: none;">
+        <div class="modal-overlay" onclick="closeContextModal()"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>🔍 Monty's Current Context</h3>
+                <button class="btn" onclick="closeContextModal()">✕</button>
+            </div>
+            <div class="modal-body" id="context-modal-body">
+                Loading...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Navigation
+        function showPage(page) {
+            // Hide all views
+            document.querySelectorAll('[id$="-view"]').forEach(el => el.style.display = 'none');
+
+            // Show selected view
+            const viewId = page === 'dashboard' ? 'dashboard-view' : `${page}-view`;
+            document.getElementById(viewId).style.display = 'block';
+
+            // Update nav
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            document.querySelector(`[data-page="${page}"]`).classList.add('active');
+
+            // Update title
+            const titles = {
+                'dashboard': 'Dashboard',
+                'chat': 'Chat with Monty',
+                'trades': 'Trade Queue',
+                'positions': 'Positions',
+                'strategies': 'Strategies',
+                'logs': 'Activity Log'
+            };
+            document.getElementById('page-title').textContent = titles[page] || 'Dashboard';
+        }
+
+        // Click handlers for nav
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => showPage(item.dataset.page));
+        });
+
+        // Strategy toggle
+        function toggleStrategy(el, strategyId) {
+            el.classList.toggle('active');
+            const enabled = el.classList.contains('active');
+            console.log(`Strategy ${strategyId}: ${enabled ? 'enabled' : 'disabled'}`);
+            // TODO: API call to update strategy
+        }
+
+        // Refresh data
+        async function refreshData() {
+            try {
+                const response = await fetch('/api/portfolio');
+                const data = await response.json();
+
+                // Defensive defaults
+                const totalValue = data.total_value ?? 10000;
+                const pnl = data.pnl ?? 0;
+                const pnlPct = data.pnl_pct ?? 0;
+                const positions = data.positions ?? {};
+
+                // Update stats
+                document.getElementById('portfolio-value').textContent = `$${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+                document.getElementById('total-pnl').textContent = `$${pnl.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+                document.getElementById('total-pnl').className = `stat-value ${pnl >= 0 ? 'positive' : 'negative'}`;
+                document.getElementById('portfolio-change').textContent = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
+                document.getElementById('portfolio-change').className = `stat-change ${pnlPct >= 0 ? 'positive' : 'negative'}`;
+                document.getElementById('open-positions').textContent = Object.keys(positions).length;
+
+                addLog('Data refreshed', 'success');
+            } catch (e) {
+                addLog(`Refresh failed: ${e.message}`, 'error');
+            }
+        }
+
+        // Run scan
+        async function runScan() {
+            addLog('Manual scan triggered...', 'info');
+            try {
+                const response = await fetch('/api/scan', { method: 'POST' });
+                const data = await response.json();
+                addLog(`Scan complete: ${data.proposals_count} proposals`, 'success');
+                refreshData();
+            } catch (e) {
+                addLog(`Scan failed: ${e.message}`, 'error');
+            }
+        }
+
+        // Logging
+        function addLog(message, type = 'info') {
+            const now = new Date();
+            const timestamp = now.toTimeString().split(' ')[0];
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry ${type}`;
+            logEntry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+
+            const logPanel = document.getElementById('log-panel');
+            logPanel.appendChild(logEntry);
+            logPanel.scrollTop = logPanel.scrollHeight;
+
+            // Also add to full log
+            const fullLog = document.getElementById('log-panel-full');
+            if (fullLog) {
+                fullLog.appendChild(logEntry.cloneNode(true));
+                fullLog.scrollTop = fullLog.scrollHeight;
+            }
+        }
+
+        function clearLogs() {
+            document.getElementById('log-panel-full').innerHTML = '';
+            addLog('Logs cleared', 'info');
+        }
+
+        // Initial load
+        addLog('🎩 Monty dashboard loaded', 'success');
+        refreshData();
+
+        // Auto-refresh every 30 seconds
+        setInterval(refreshData, 30000);
+
+        // ===== CHAT FUNCTIONS =====
+        let chatLoading = false;
+
+        function handleChatKeypress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendChatMessage();
+            }
+        }
+
+        async function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            // Prevent double-send while loading
+            if (chatLoading) {
+                console.log('[Chat] Blocked: already loading');
+                return;
+            }
+
+            // Add user message to chat FIRST
+            console.log('[Chat] Adding user message:', message);
+            addChatMessage('user', message);
+            input.value = '';
+
+            // Show loading indicator
+            chatLoading = true;
+            const loadingId = addChatMessage('assistant', '🎩 Thinking...', true);
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+                const data = await response.json();
+
+                // Remove loading message
+                const loadingEl = document.getElementById(loadingId);
+                if (loadingEl) {
+                    console.log('[Chat] Removing loading message:', loadingId);
+                    loadingEl.remove();
+                }
+
+                // Show tool calls if any
+                if (data.tool_calls && data.tool_calls.length > 0) {
+                    const toolsHtml = data.tool_calls.map(tc =>
+                        `<span class="tool-badge">🔧 ${tc.tool}</span>`
+                    ).join(' ');
+                    addToolCallsMessage(toolsHtml);
+                }
+
+                // Add response
+                addChatMessage('assistant', data.response);
+
+            } catch (e) {
+                const loadingEl = document.getElementById(loadingId);
+                if (loadingEl) loadingEl.remove();
+                addChatMessage('assistant', `Sorry, something went wrong: ${e.message}`);
+            }
+
+            chatLoading = false;
+        }
+
+        function addToolCallsMessage(toolsHtml) {
+            const messagesContainer = document.getElementById('chat-messages');
+            const toolDiv = document.createElement('div');
+            toolDiv.className = 'chat-tool-calls';
+            toolDiv.innerHTML = toolsHtml;
+            messagesContainer.appendChild(toolDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function addChatMessage(role, content, isLoading = false) {
+            const messagesContainer = document.getElementById('chat-messages');
+            const msgId = 'msg-' + Date.now();
+
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `chat-message ${role}`;
+            msgDiv.id = msgId;
+
+            const avatar = role === 'user' ? '👤' : '🎩';
+
+            // Convert markdown-like formatting
+            let formattedContent = content
+                .replace(/\n/g, '<br>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/`(.+?)`/g, '<code>$1</code>');
+
+            msgDiv.innerHTML = `
+                <div class="chat-avatar">${avatar}</div>
+                <div class="chat-bubble ${isLoading ? 'loading' : ''}">${formattedContent}</div>
+            `;
+
+            messagesContainer.appendChild(msgDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            return msgId;
+        }
+
+        async function exportChatAsMarkdown() {
+            const messages = document.querySelectorAll('#chat-messages .chat-message');
+            const now = new Date();
+
+            let markdown = `# Monty Chat Export\n`;
+            markdown += `*Exported on ${now.toLocaleString()}*\n\n---\n\n`;
+
+            messages.forEach(msg => {
+                const isUser = msg.classList.contains('user');
+                const bubble = msg.querySelector('.chat-bubble');
+                if (!bubble) return;
+
+                // Convert HTML back to plain text (roughly)
+                let content = bubble.innerHTML
+                    .replace(/<br\s*\/?>/gi, '\n')
+                    .replace(/<strong>(.+?)<\/strong>/gi, '**$1**')
+                    .replace(/<em>(.+?)<\/em>/gi, '*$1*')
+                    .replace(/<code>(.+?)<\/code>/gi, '`$1`')
+                    .replace(/<ul>/gi, '\n')
+                    .replace(/<\/ul>/gi, '\n')
+                    .replace(/<li>/gi, '- ')
+                    .replace(/<\/li>/gi, '\n')
+                    .replace(/<[^>]+>/g, '');  // Remove remaining HTML tags
+
+                content = content.trim();
+
+                if (isUser) {
+                    markdown += `## 👤 You\n${content}\n\n`;
+                } else {
+                    markdown += `## 🎩 Monty\n${content}\n\n`;
+                }
+            });
+
+            // Save to server
+            try {
+                const response = await fetch('/api/chat/export', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ markdown })
+                });
+                const data = await response.json();
+
+                if (data.status === 'exported') {
+                    addLog(`Chat exported: ${data.filename}`, 'success');
+                } else {
+                    addLog(`Export failed: ${data.error}`, 'error');
+                }
+            } catch (e) {
+                addLog(`Export failed: ${e.message}`, 'error');
+            }
+        }
+
+        // Context Debug Modal
+        async function showContextDebug() {
+            const modal = document.getElementById('context-modal');
+            const body = document.getElementById('context-modal-body');
+            modal.style.display = 'flex';
+            body.innerHTML = '<p style="color: var(--text-muted);">Loading context...</p>';
+
+            try {
+                const response = await fetch('/api/chat/context');
+                const data = await response.json();
+
+                if (data.error) {
+                    body.innerHTML = `<p style="color: var(--danger);">Error: ${data.error}</p>`;
+                    return;
+                }
+
+                // Format the context display
+                let html = '';
+
+                // Active Strategies
+                html += '<h4>📊 Active Strategies</h4><ul>';
+                if (data.active_strategies && data.active_strategies.length) {
+                    data.active_strategies.forEach(s => {
+                        html += `<li><strong>${s.name}</strong> - ${s.description} <span class="badge">${s.risk_level}</span></li>`;
+                    });
+                } else {
+                    html += '<li>None loaded</li>';
+                }
+                html += '</ul>';
+
+                // Portfolio
+                html += '<h4>💰 Portfolio</h4>';
+                if (data.portfolio) {
+                    html += `<ul>
+                        <li>Cash: $${(data.portfolio.cash || 0).toLocaleString()}</li>
+                        <li>Total Value: $${(data.portfolio.total_value || 0).toLocaleString()}</li>
+                        <li>P&L: $${(data.portfolio.pnl || 0).toFixed(2)} (${(data.portfolio.pnl_pct || 0).toFixed(2)}%)</li>
+                        <li>Positions: ${Object.keys(data.portfolio.positions || {}).length}</li>
+                    </ul>`;
+                }
+
+                // Pending Trades
+                html += '<h4>⏳ Pending Trades</h4>';
+                if (data.pending_trades && data.pending_trades.length) {
+                    html += '<ul>';
+                    data.pending_trades.forEach(t => {
+                        html += `<li>#${t.id}: ${t.action} ${t.symbol}</li>`;
+                    });
+                    html += '</ul>';
+                } else {
+                    html += '<p style="color: var(--text-muted);">No pending trades</p>';
+                }
+
+                // Recent Trades
+                html += '<h4>📜 Recent Trades</h4>';
+                if (data.recent_trades && data.recent_trades.length) {
+                    html += '<ul>';
+                    data.recent_trades.forEach(t => {
+                        html += `<li>#${t.id}: ${t.action} ${t.symbol} - ${t.status}</li>`;
+                    });
+                    html += '</ul>';
+                } else {
+                    html += '<p style="color: var(--text-muted);">No trade history</p>';
+                }
+
+                // Dynamic Context
+                html += '<h4>🧠 Dynamic Context (injected per message)</h4>';
+                html += `<pre style="background: var(--bg-elevated); padding: 12px; border-radius: 6px; font-size: 12px; overflow-x: auto;">${data.dynamic_context || 'N/A'}</pre>`;
+
+                // System Prompt (collapsible)
+                html += '<h4>📝 System Prompt</h4>';
+                html += `<details><summary style="cursor: pointer; color: var(--accent);">Click to expand</summary>`;
+                html += `<pre style="background: var(--bg-elevated); padding: 12px; border-radius: 6px; font-size: 11px; max-height: 300px; overflow: auto; white-space: pre-wrap;">${data.system_prompt || 'N/A'}</pre></details>`;
+
+                html += `<p style="margin-top: 16px; color: var(--text-muted); font-size: 12px;">Chat history length: ${data.chat_history_length || 0} messages</p>`;
+
+                body.innerHTML = html;
+            } catch (e) {
+                body.innerHTML = `<p style="color: var(--danger);">Failed to load context: ${e.message}</p>`;
+            }
+        }
+
+        function closeContextModal() {
+            document.getElementById('context-modal').style.display = 'none';
+        }
+    </script>
+</body>
+
+</html>
