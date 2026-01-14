@@ -153,6 +153,28 @@
                     </div>
                 </div>
 
+                <!-- Trades View (hidden by default) -->
+                <div id="trades-view" style="display: none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">⏳ Pending Trades</span>
+                            <button class="btn btn-danger" onclick="rejectAllTrades()">Reject All</button>
+                        </div>
+                        <div id="pending-trades-list" class="trades-list">
+                            <div class="trades-empty">No pending trades</div>
+                        </div>
+                    </div>
+
+                    <div class="card" style="margin-top: 24px;">
+                        <div class="card-header">
+                            <span class="card-title">📜 Trade History</span>
+                        </div>
+                        <div id="trade-history-list" class="trades-list">
+                            <div class="trades-empty">No trade history</div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Strategies View (hidden by default) -->
                 <div id="strategies-view" style="display: none;">
                     <div class="card">
@@ -398,10 +420,15 @@
                 });
                 const data = await response.json();
 
-                // Remove loading message
+                // Remove ALL loading messages (aggressive cleanup)
+                document.querySelectorAll('.chat-message[data-loading="true"]').forEach(el => {
+                    console.log('[Chat] Removing loading message by data-attr');
+                    el.remove();
+                });
+                // Also try by ID as fallback
                 const loadingEl = document.getElementById(loadingId);
                 if (loadingEl) {
-                    console.log('[Chat] Removing loading message:', loadingId);
+                    console.log('[Chat] Removing loading message by ID:', loadingId);
                     loadingEl.remove();
                 }
 
@@ -416,9 +443,15 @@
                 // Add response
                 addChatMessage('assistant', data.response);
 
+                // If a trade was proposed, add inline approval buttons
+                if (data.trade_proposal && data.trade_proposal.trade_id) {
+                    const tradeId = data.trade_proposal.trade_id;
+                    addTradeApprovalButtons(tradeId);
+                }
+
             } catch (e) {
-                const loadingEl = document.getElementById(loadingId);
-                if (loadingEl) loadingEl.remove();
+                // Remove ALL loading messages on error too
+                document.querySelectorAll('.chat-message[data-loading="true"]').forEach(el => el.remove());
                 addChatMessage('assistant', `Sorry, something went wrong: ${e.message}`);
             }
 
@@ -436,11 +469,17 @@
 
         function addChatMessage(role, content, isLoading = false) {
             const messagesContainer = document.getElementById('chat-messages');
-            const msgId = 'msg-' + Date.now();
+            // Use timestamp + random to prevent ID collision
+            const msgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
 
             const msgDiv = document.createElement('div');
             msgDiv.className = `chat-message ${role}`;
             msgDiv.id = msgId;
+
+            // Set data attribute for loading messages so we can clean them up
+            if (isLoading) {
+                msgDiv.setAttribute('data-loading', 'true');
+            }
 
             const avatar = role === 'user' ? '👤' : '🎩';
 
@@ -460,6 +499,21 @@
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
             return msgId;
+        }
+
+        function addTradeApprovalButtons(tradeId) {
+            const messagesContainer = document.getElementById('chat-messages');
+
+            const buttonsDiv = document.createElement('div');
+            buttonsDiv.className = 'trade-inline-actions';
+            buttonsDiv.id = `inline-trade-${tradeId}`;
+            buttonsDiv.innerHTML = `
+                <button class="btn btn-success btn-sm" onclick="approveTradeInline(${tradeId})">✓ Approve Trade</button>
+                <button class="btn btn-danger btn-sm" onclick="rejectTradeInline(${tradeId})">✕ Reject</button>
+            `;
+
+            messagesContainer.appendChild(buttonsDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
 
         async function exportChatAsMarkdown() {
@@ -547,12 +601,23 @@
                 // Portfolio
                 html += '<h4>💰 Portfolio</h4>';
                 if (data.portfolio) {
+                    const positions = data.portfolio.positions || {};
+                    const positionCount = Object.keys(positions).length;
                     html += `<ul>
                         <li>Cash: $${(data.portfolio.cash || 0).toLocaleString()}</li>
                         <li>Total Value: $${(data.portfolio.total_value || 0).toLocaleString()}</li>
                         <li>P&L: $${(data.portfolio.pnl || 0).toFixed(2)} (${(data.portfolio.pnl_pct || 0).toFixed(2)}%)</li>
-                        <li>Positions: ${Object.keys(data.portfolio.positions || {}).length}</li>
                     </ul>`;
+
+                    if (positionCount > 0) {
+                        html += '<h4>📊 Open Positions</h4><ul>';
+                        for (const [symbol, pos] of Object.entries(positions)) {
+                            html += `<li><strong>${symbol}</strong>: ${pos.quantity?.toFixed(6) || 'N/A'} @ $${pos.entry_price?.toFixed(2) || 'N/A'}</li>`;
+                        }
+                        html += '</ul>';
+                    } else {
+                        html += '<p style="color: var(--text-muted);">No open positions</p>';
+                    }
                 }
 
                 // Pending Trades
@@ -598,6 +663,164 @@
 
         function closeContextModal() {
             document.getElementById('context-modal').style.display = 'none';
+        }
+
+        // ===== TRADE MANAGEMENT FUNCTIONS =====
+
+        async function loadPendingTrades() {
+            try {
+                const response = await fetch('/api/trades/pending');
+                const data = await response.json();
+                const container = document.getElementById('pending-trades-list');
+
+                if (!data.trades || data.trades.length === 0) {
+                    container.innerHTML = '<div class="trades-empty">No pending trades</div>';
+                    return;
+                }
+
+                container.innerHTML = data.trades.map(trade => `
+                    <div class="trade-card pending" id="trade-${trade.id}">
+                        <div class="trade-header">
+                            <span class="trade-action ${trade.action.toLowerCase()}">${trade.action}</span>
+                            <span class="trade-symbol">${trade.symbol}</span>
+                            <span class="trade-time">${trade.time_remaining_mins} min left</span>
+                        </div>
+                        <div class="trade-body">
+                            <div class="trade-price">$${trade.price?.toFixed(2) || 'N/A'}</div>
+                            <div class="trade-strategy">${trade.strategy || 'Manual'}</div>
+                            <div class="trade-reason">${trade.reasoning || ''}</div>
+                        </div>
+                        <div class="trade-actions">
+                            <button class="btn btn-success" onclick="approveTrade(${trade.id})">✓ Approve</button>
+                            <button class="btn btn-danger" onclick="rejectTrade(${trade.id})">✕ Reject</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load pending trades:', e);
+            }
+        }
+
+        async function loadTradeHistory() {
+            try {
+                const response = await fetch('/api/chat/context');
+                const data = await response.json();
+                const container = document.getElementById('trade-history-list');
+
+                if (!data.recent_trades || data.recent_trades.length === 0) {
+                    container.innerHTML = '<div class="trades-empty">No trade history</div>';
+                    return;
+                }
+
+                container.innerHTML = data.recent_trades.map(trade => `
+                    <div class="trade-card ${trade.status.toLowerCase()}">
+                        <div class="trade-header">
+                            <span class="trade-action ${trade.action.toLowerCase()}">${trade.action}</span>
+                            <span class="trade-symbol">${trade.symbol}</span>
+                            <span class="trade-status ${trade.status.toLowerCase()}">${trade.status}</span>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load trade history:', e);
+            }
+        }
+
+        async function approveTrade(tradeId) {
+            try {
+                const response = await fetch(`/api/trades/${tradeId}/approve`, { method: 'POST' });
+                const data = await response.json();
+
+                if (data.status === 'approved') {
+                    // Update UI
+                    const tradeCard = document.getElementById(`trade-${tradeId}`);
+                    if (tradeCard) {
+                        tradeCard.classList.remove('pending');
+                        tradeCard.classList.add('approved');
+                        tradeCard.querySelector('.trade-actions').innerHTML = '<span class="trade-status approved">✓ Approved</span>';
+                    }
+                    addLog(`Trade #${tradeId} approved`, 'success');
+                    // Refresh lists
+                    setTimeout(loadPendingTrades, 500);
+                    setTimeout(loadTradeHistory, 500);
+                }
+            } catch (e) {
+                addLog(`Failed to approve trade: ${e.message}`, 'error');
+            }
+        }
+
+        async function rejectTrade(tradeId) {
+            try {
+                const response = await fetch(`/api/trades/${tradeId}/reject`, { method: 'POST' });
+                const data = await response.json();
+
+                if (data.status === 'rejected') {
+                    const tradeCard = document.getElementById(`trade-${tradeId}`);
+                    if (tradeCard) {
+                        tradeCard.remove();
+                    }
+                    addLog(`Trade #${tradeId} rejected`, 'info');
+                    setTimeout(loadPendingTrades, 500);
+                }
+            } catch (e) {
+                addLog(`Failed to reject trade: ${e.message}`, 'error');
+            }
+        }
+
+        async function rejectAllTrades() {
+            if (!confirm('Reject all pending trades?')) return;
+
+            try {
+                const response = await fetch('/api/trades/reject-all', { method: 'POST' });
+                const data = await response.json();
+                addLog(data.message, 'info');
+                loadPendingTrades();
+            } catch (e) {
+                addLog(`Failed to reject all trades: ${e.message}`, 'error');
+            }
+        }
+
+        // Load trades when Trade Queue page is shown
+        const originalShowPage = document.querySelectorAll('.nav-item').forEach.bind(document.querySelectorAll('.nav-item'));
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                if (item.dataset.page === 'trades') {
+                    setTimeout(() => {
+                        loadPendingTrades();
+                        loadTradeHistory();
+                    }, 100);
+                }
+            });
+        });
+
+        // Function to add inline trade approval buttons to chat
+        function addTradeProposalToChat(tradeId, symbol, action, price) {
+            const msgId = addChatMessage('assistant', `
+                <div class="trade-proposal-inline">
+                    <strong>Trade Proposal Created</strong><br>
+                    <span class="trade-action ${action.toLowerCase()}">${action}</span> ${symbol} at $${price.toFixed(2)}<br>
+                    <div class="trade-inline-actions" id="inline-trade-${tradeId}">
+                        <button class="btn btn-success btn-sm" onclick="approveTradeInline(${tradeId})">✓ Approve</button>
+                        <button class="btn btn-danger btn-sm" onclick="rejectTradeInline(${tradeId})">✕ Reject</button>
+                    </div>
+                </div>
+            `);
+            return msgId;
+        }
+
+        async function approveTradeInline(tradeId) {
+            const container = document.getElementById(`inline-trade-${tradeId}`);
+            if (container) container.innerHTML = '<span style="color: var(--success);">⏳ Executing...</span>';
+
+            await approveTrade(tradeId);
+
+            if (container) container.innerHTML = '<span style="color: var(--success);">✓ Approved & Executed</span>';
+        }
+
+        async function rejectTradeInline(tradeId) {
+            const container = document.getElementById(`inline-trade-${tradeId}`);
+            if (container) container.innerHTML = '<span style="color: var(--text-muted);">✕ Rejected</span>';
+            await rejectTrade(tradeId);
         }
     </script>
 </body>

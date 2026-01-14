@@ -16,6 +16,8 @@ def create_app(config_class=Config):
 
     # Create database tables
     with app.app_context():
+        # Import models so they register with SQLAlchemy
+        from app import models  # noqa: F401
         db.create_all()
 
     # Register scheduled jobs

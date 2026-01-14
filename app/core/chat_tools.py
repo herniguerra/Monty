@@ -221,37 +221,49 @@ class ToolExecutor:
             return {"sentiment": "NEUTRAL", "confidence": 0.0, "error": str(e)}
 
     def _propose_trade(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        from app.agents.proposals import TradeProposal, ProposalManager
-        from app.models import Trade
-        from app.extensions import db
-        
-        symbol = args.get("symbol", "BTC/USDT")
-        action = args.get("action", "HOLD")
-        reason = args.get("reason", "User requested trade")
-        allocation = args.get("allocation_pct", 3.0)
-        
-        # Get current price
-        price_data = self.price_sensor.get_price(symbol)
-        current_price = price_data.price if price_data else 0
-        
-        # Create trade in database
-        trade = Trade(
-            symbol=symbol,
-            action=action,
-            price=current_price,
-            quantity=0,
-            status="PENDING",
-            strategy="chat_request",
-            reasoning=reason
-        )
-        db.session.add(trade)
-        db.session.commit()
-        
-        return {
-            "status": "proposed",
-            "trade_id": trade.id,
-            "message": f"Trade proposal created: {action} {symbol} at ${current_price:,.2f}. Awaiting your approval."
-        }
+        try:
+            from app.agents.proposals import TradeProposal, ProposalManager
+            from app.models import Trade
+            from app.extensions import db
+            
+            symbol = args.get("symbol", "BTC/USDT")
+            action = args.get("action", "HOLD")
+            reason = args.get("reason", "User requested trade")
+            allocation = args.get("allocation_pct", 3.0)
+            
+            print(f"[propose_trade] Creating trade: {action} {symbol}")
+            
+            # Get current price
+            price_data = self.price_sensor.get_price(symbol)
+            current_price = price_data.price if price_data else 0
+            print(f"[propose_trade] Price: ${current_price}")
+            
+            # Create trade in database
+            trade = Trade(
+                symbol=symbol,
+                action=action,
+                price=current_price,
+                quantity=0,
+                status="PENDING",
+                strategy="chat_request",
+                reasoning=reason
+            )
+            print(f"[propose_trade] Trade object created, adding to session...")
+            db.session.add(trade)
+            print(f"[propose_trade] Committing...")
+            db.session.commit()
+            print(f"[propose_trade] SUCCESS! Trade ID: {trade.id}")
+            
+            return {
+                "status": "proposed",
+                "trade_id": trade.id,
+                "message": f"Trade proposal created: {action} {symbol} at ${current_price:,.2f}. Awaiting your approval."
+            }
+        except Exception as e:
+            import traceback
+            error_msg = f"[propose_trade] ERROR: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return {"error": f"Failed to create trade: {str(e)}"}
 
     def _get_pending_trades(self) -> Dict[str, Any]:
         from app.models import Trade

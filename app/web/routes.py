@@ -183,9 +183,20 @@ def chat():
         engine = get_chat_engine()
         result = engine.chat(user_message)
         
+        # Check if a trade was proposed in this response
+        trade_proposal = None
+        for tc in result.get('tool_calls', []):
+            if tc.get('tool') == 'propose_trade' and tc.get('result', {}).get('status') == 'proposed':
+                trade_proposal = {
+                    'trade_id': tc['result'].get('trade_id'),
+                    'message': tc['result'].get('message')
+                }
+                break
+        
         return jsonify({
             'response': result.get('response', ''),
             'tool_calls': result.get('tool_calls', []),
+            'trade_proposal': trade_proposal,
             'timestamp': engine.history[-1].timestamp.isoformat() if engine.history else None
         })
     except Exception as e:

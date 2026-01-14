@@ -213,7 +213,8 @@ Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
                 tool_calls_made.append({
                     "tool": func_name,
                     "args": func_args,
-                    "result_preview": str(result)[:200]  # Truncate for UI
+                    "result": result,  # Full result for API
+                    "result_preview": str(result)[:200]  # Truncated for UI
                 })
                 
                 tool_results.append(types.Part(
