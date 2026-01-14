@@ -112,7 +112,7 @@ def reject_trade(trade_id):
 
 
 @bp.route('/api/trades/pending')
-def get_pending_trades():
+def list_pending_trades():
     """Get all pending trades with expiration info."""
     from app.models import Trade
     from datetime import datetime
