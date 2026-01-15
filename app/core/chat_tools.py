@@ -51,7 +51,7 @@ MONTY_TOOLS = [
             ),
             types.FunctionDeclaration(
                 name="propose_trade",
-                description="Create a trade proposal for user approval. Does NOT execute immediately.",
+                description="Create a trade proposal for user approval. Does NOT execute immediately. Always include stop_loss_pct and take_profit_pct for proper risk management.",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
@@ -70,9 +70,17 @@ MONTY_TOOLS = [
                         "allocation_pct": types.Schema(
                             type=types.Type.NUMBER,
                             description="Percentage of portfolio to allocate (1-10%)"
+                        ),
+                        "stop_loss_pct": types.Schema(
+                            type=types.Type.NUMBER,
+                            description="Stop loss percentage below entry price (e.g., 5 = sell if price drops 5%)"
+                        ),
+                        "take_profit_pct": types.Schema(
+                            type=types.Type.NUMBER,
+                            description="Take profit percentage above entry price (e.g., 10 = sell if price rises 10%)"
                         )
                     },
-                    required=["symbol", "action", "reason"]
+                    required=["symbol", "action", "reason", "stop_loss_pct", "take_profit_pct"]
                 )
             ),
             types.FunctionDeclaration(
@@ -108,6 +116,20 @@ MONTY_TOOLS = [
                             description="Number of recent trades to return (default 10)"
                         )
                     }
+                )
+            ),
+            types.FunctionDeclaration(
+                name="get_trade_status",
+                description="Get the current status of a specific trade by ID. Use this to check if a trade was approved, executed, rejected, or is still pending.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "trade_id": types.Schema(
+                            type=types.Type.INTEGER,
+                            description="The trade ID to check"
+                        )
+                    },
+                    required=["trade_id"]
                 )
             ),
             types.FunctionDeclaration(
@@ -164,6 +186,8 @@ class ToolExecutor:
                 return self._get_pending_trades()
             elif function_name == "get_trade_history":
                 return self._get_trade_history(args.get("limit", 10))
+            elif function_name == "get_trade_status":
+                return self._get_trade_status(args.get("trade_id"))
             elif function_name == "get_trading_playbook":
                 return self._get_playbook(args.get("section", "all"))
             else:
@@ -230,13 +254,20 @@ class ToolExecutor:
             action = args.get("action", "HOLD")
             reason = args.get("reason", "User requested trade")
             allocation = args.get("allocation_pct", 3.0)
+            stop_loss_pct = args.get("stop_loss_pct")
+            take_profit_pct = args.get("take_profit_pct")
             
             print(f"[propose_trade] Creating trade: {action} {symbol}")
+            print(f"[propose_trade] SL: {stop_loss_pct}%, TP: {take_profit_pct}%")
             
             # Get current price
             price_data = self.price_sensor.get_price(symbol)
             current_price = price_data.price if price_data else 0
             print(f"[propose_trade] Price: ${current_price}")
+            
+            # Calculate absolute SL/TP prices
+            stop_loss_price = current_price * (1 - stop_loss_pct / 100) if stop_loss_pct else None
+            take_profit_price = current_price * (1 + take_profit_pct / 100) if take_profit_pct else None
             
             # Create trade in database
             trade = Trade(
@@ -246,24 +277,73 @@ class ToolExecutor:
                 quantity=0,
                 status="PENDING",
                 strategy="chat_request",
-                reasoning=reason
+                reasoning=reason,
+                stop_loss=stop_loss_price,
+                take_profit=take_profit_price
             )
             print(f"[propose_trade] Trade object created, adding to session...")
             db.session.add(trade)
-            print(f"[propose_trade] Committing...")
-            db.session.commit()
-            print(f"[propose_trade] SUCCESS! Trade ID: {trade.id}")
             
+            # Flush to get the ID before commit
+            db.session.flush()
+            trade_id = trade.id
+            print(f"[propose_trade] Flushed, trade ID: {trade_id}")
+            
+            # Commit the transaction
+            db.session.commit()
+            print(f"[propose_trade] Committed!")
+            
+            # Verify the trade was actually saved
+            verified_trade = Trade.query.get(trade_id)
+            if not verified_trade:
+                print(f"[propose_trade] ERROR: Trade {trade_id} not found after commit!")
+                return {"error": f"Trade was not saved properly. Please try again."}
+            
+            print(f"[propose_trade] SUCCESS! Verified Trade ID: {verified_trade.id}, Status: {verified_trade.status}")
+            
+            # Send Telegram notification with inline buttons
+            try:
+                from app.telegram.bot import get_telegram_bot
+                
+                bot = get_telegram_bot()
+                if bot:
+                    sl_text = f"\n🛑 **Stop Loss:** ${stop_loss_price:,.2f} (-{stop_loss_pct:.1f}%)" if stop_loss_price else ""
+                    tp_text = f"\n🎯 **Take Profit:** ${take_profit_price:,.2f} (+{take_profit_pct:.1f}%)" if take_profit_price else ""
+                    telegram_msg = f"""
+🚨 **Trade Proposal #{verified_trade.id}**
+
+{"🟢" if action == "BUY" else "🔴"} **{action} {symbol}**
+
+💡 **Why?** {reason}
+💰 **Price:** ${current_price:,.2f}
+📊 **Allocation:** {allocation}% of portfolio{sl_text}{tp_text}
+
+_Use the buttons below to approve or reject_
+""".strip()
+                    bot.send_proposal_notification(telegram_msg, verified_trade.id)
+                    print(f"[propose_trade] Telegram notification sent")
+            except Exception as tg_err:
+                print(f"[propose_trade] Telegram notification failed: {tg_err}")
+            
+            sl_msg = f", SL: ${stop_loss_price:,.2f}" if stop_loss_price else ""
+            tp_msg = f", TP: ${take_profit_price:,.2f}" if take_profit_price else ""
             return {
                 "status": "proposed",
-                "trade_id": trade.id,
-                "message": f"Trade proposal created: {action} {symbol} at ${current_price:,.2f}. Awaiting your approval."
+                "trade_id": verified_trade.id,
+                "symbol": verified_trade.symbol,
+                "action": verified_trade.action,
+                "price": verified_trade.price,
+                "stop_loss": stop_loss_price,
+                "take_profit": take_profit_price,
+                "message": f"Trade proposal #{verified_trade.id} created: {action} {symbol} at ${current_price:,.2f}{sl_msg}{tp_msg}. User can approve it using the inline button or from the Trade Queue page."
             }
         except Exception as e:
             import traceback
             error_msg = f"[propose_trade] ERROR: {str(e)}\n{traceback.format_exc()}"
             print(error_msg)
+            db.session.rollback()
             return {"error": f"Failed to create trade: {str(e)}"}
+
 
     def _get_pending_trades(self) -> Dict[str, Any]:
         from app.models import Trade
@@ -301,6 +381,29 @@ class ToolExecutor:
             }
         except:
             return {"count": 0, "trades": []}
+
+    def _get_trade_status(self, trade_id: int) -> Dict[str, Any]:
+        """Get the status of a specific trade by ID."""
+        from app.models import Trade
+        
+        if not trade_id:
+            return {"error": "No trade_id provided"}
+        
+        trade = Trade.query.get(trade_id)
+        if not trade:
+            return {"error": f"No trade found with ID {trade_id}"}
+        
+        return {
+            "trade_id": trade.id,
+            "symbol": trade.symbol,
+            "action": trade.action,
+            "status": trade.status,
+            "price": trade.price,
+            "quantity": trade.quantity,
+            "strategy": trade.strategy,
+            "reasoning": trade.reasoning,
+            "created_at": trade.created_at.isoformat() if trade.created_at else None
+        }
 
     def _execute_trade(self, trade_id: int) -> Dict[str, Any]:
         """

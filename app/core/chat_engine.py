@@ -4,7 +4,7 @@ Handles conversations with function calling support.
 """
 import os
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Generator
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -71,9 +71,16 @@ You are the expert. If the user suggests something risky, PUSH BACK politely:
 3. Before any proposal: Is R:R ≥ 2:1? Is position size ≤ 5%?
 4. If user asks for predictions: "I can analyze, but can't predict. Here's what the data shows..."
 5. If user asks detailed strategy questions, use get_trading_playbook to provide expert answers
+6. **PROACTIVE RESEARCH**: If user asks for a trade recommendation WITHOUT specifying a coin (e.g., "propose a trade", "find me an opportunity", "what should I buy?"):
+   - FIRST call get_market_overview() to see current prices and 24h changes
+   - THEN call analyze_news_sentiment() to gauge market mood
+   - ANALYZE the data to find the best opportunity based on your strategy knowledge
+   - FINALLY propose_trade() with your researched recommendation and explain your reasoning
+7. **TRADE ID ACCURACY**: When you call propose_trade(), the tool returns a `trade_id`. ALWAYS use the EXACT trade_id from the tool result when referring to the trade. Never make up or guess trade IDs. If the tool returns an error, inform the user.
 
 Current context will be provided with each message.
 """
+
 
 
 @dataclass
@@ -258,9 +265,125 @@ Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
         
         return {"response": final_text, "tool_calls": tool_calls_made}
 
+    def chat_stream(self, user_message: str) -> Generator[Dict[str, Any], None, None]:
+        """
+        Stream response tokens as they arrive.
+        Yields dicts:
+          {"type": "text", "delta": "..."}
+          {"type": "tool_call", "tool": "...", "args": {...}}
+          {"type": "tool_result", "tool": "...", "result": {...}}
+          {"type": "done", "full_response": "...", "tool_calls": [...]}
+        """
+        # Add user message to history
+        self.history.append(ChatMessage(role="user", content=user_message))
+        
+        # Build messages
+        messages = self._build_messages(user_message)
+        
+        # Track tool calls and full response for final yield
+        tool_calls_made = []
+        full_response = ""
+        
+        max_tool_iterations = 5
+        iteration = 0
+        
+        while iteration < max_tool_iterations:
+            iteration += 1
+            
+            try:
+                # Use streaming API
+                stream = self.client.models.generate_content_stream(
+                    model=MODEL_ID,
+                    contents=messages,
+                    config=types.GenerateContentConfig(
+                        tools=MONTY_TOOLS,
+                        temperature=0.7
+                    )
+                )
+            except Exception as e:
+                error_msg = f"Sorry, I'm having trouble connecting right now. Error: {e}"
+                self.history.append(ChatMessage(role="assistant", content=error_msg))
+                yield {"type": "text", "delta": error_msg}
+                yield {"type": "done", "full_response": error_msg, "tool_calls": []}
+                return
+            
+            # Collect chunks and detect function calls
+            collected_parts = []
+            text_in_this_stream = ""
+            
+            for chunk in stream:
+                if not chunk.candidates or not chunk.candidates[0].content.parts:
+                    continue
+                
+                for part in chunk.candidates[0].content.parts:
+                    collected_parts.append(part)
+                    
+                    # Stream text immediately
+                    if hasattr(part, 'text') and part.text:
+                        yield {"type": "text", "delta": part.text}
+                        text_in_this_stream += part.text
+                        full_response += part.text
+            
+            # Check if there were function calls in this stream
+            function_calls = [p for p in collected_parts 
+                              if hasattr(p, 'function_call') and p.function_call]
+            
+            if not function_calls:
+                # No function calls, we're done streaming
+                break
+            
+            # Execute function calls
+            tool_results = []
+            for part in function_calls:
+                fc = part.function_call
+                func_name = fc.name
+                func_args = dict(fc.args) if fc.args else {}
+                
+                # Notify about tool call
+                yield {"type": "tool_call", "tool": func_name, "args": func_args}
+                
+                print(f"[Chat Stream] Calling tool: {func_name}({func_args})")
+                result = self.tool_executor.execute(func_name, func_args)
+                
+                # Notify about result
+                yield {"type": "tool_result", "tool": func_name, "result": result}
+                
+                tool_calls_made.append({
+                    "tool": func_name,
+                    "args": func_args,
+                    "result": result,
+                    "result_preview": str(result)[:200]
+                })
+                
+                tool_results.append(types.Part(
+                    function_response=types.FunctionResponse(
+                        name=func_name,
+                        response=result
+                    )
+                ))
+            
+            # Add function call parts and results to messages, continue loop
+            messages.append(types.Content(role="model", parts=collected_parts))
+            messages.append(types.Content(role="user", parts=tool_results))
+        
+        # Ensure we have some response
+        if not full_response:
+            full_response = "I processed your request but don't have a response to show."
+            yield {"type": "text", "delta": full_response}
+        
+        # Add to history
+        self.history.append(ChatMessage(role="assistant", content=full_response, tool_calls=tool_calls_made))
+        
+        # Final done event
+        yield {"type": "done", "full_response": full_response, "tool_calls": tool_calls_made}
+
     def clear_history(self):
         """Clear conversation history."""
         self.history = []
+
+    def add_message(self, role: str, content: str):
+        """Add a message to history (for injecting user actions like approve/reject)."""
+        self.history.append(ChatMessage(role=role, content=content))
 
 
 # Global chat engine instance

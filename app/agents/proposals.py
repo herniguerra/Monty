@@ -60,7 +60,7 @@ class TradeProposal:
 📉 **Bear Case:** {self.bear_case}
 """
         
-        msg += "\nReply /approve or /reject"
+        msg += "\n_Use the buttons below to approve or reject_"
         return msg.strip()
 
 
@@ -90,18 +90,93 @@ class ProposalManager:
         db.session.commit()
         
         self.pending_proposals.append(proposal)
+        
+        # Notify Telegram and inject into chat history (inject-on-notify pattern)
+        self._notify_telegram(proposal, trade.id)
+        
         return trade
+    
+    def _notify_telegram(self, proposal: TradeProposal, trade_id: int):
+        """
+        Send Telegram notification and inject into ChatEngine history.
+        This ensures users can ask follow-up questions like "why?" naturally.
+        """
+        try:
+            from app.telegram.bot import get_telegram_bot
+            from app.core.chat_engine import get_chat_engine
+            
+            # Format the message
+            message = proposal.to_telegram_message()
+            
+            # 1. Send Telegram notification with inline buttons
+            bot = get_telegram_bot()
+            if bot:
+                bot.send_proposal_notification(message, trade_id)
+            
+            # 2. Inject into ChatEngine history so Monty knows what was proposed
+            engine = get_chat_engine()
+            if engine:
+                engine.add_message("assistant", f"🚨 I just proposed a trade:\n\n{message}")
+                
+        except Exception as e:
+            print(f"[Telegram] Notification error: {e}")
+
     
     def get_pending_proposals(self) -> List[Trade]:
         """Get all pending trades from database."""
         return Trade.query.filter_by(status=ProposalStatus.PENDING.value).all()
     
     def approve_proposal(self, trade_id: int) -> Optional[Trade]:
-        """Approve a pending trade."""
+        """Approve a pending trade and execute it."""
         trade = Trade.query.get(trade_id)
         if trade and trade.status == ProposalStatus.PENDING.value:
             trade.status = ProposalStatus.APPROVED.value
             db.session.commit()
+            
+            # Execute the trade via paper trading engine
+            try:
+                from app.core.scheduler_jobs import get_paper_engine
+                from app.services.price_sensor import PriceSensor
+                
+                engine = get_paper_engine()
+                price_sensor = PriceSensor()
+                
+                # Get current price
+                price_data = price_sensor.get_price(trade.symbol)
+                current_price = price_data.price if price_data else trade.price
+                
+                if trade.action == 'BUY':
+                    # execute_buy takes: symbol, current_price, allocation_pct (5 = 5%)
+                    result = engine.execute_buy(
+                        symbol=trade.symbol,
+                        current_price=current_price,
+                        allocation_pct=5  # 5% of portfolio
+                    )
+                    # Returns ExecutedTrade object or None
+                    if result:
+                        trade.status = ProposalStatus.EXECUTED.value
+                        trade.quantity = result.quantity
+                        trade.price = current_price
+                        db.session.commit()
+                        print(f"[Trade] Executed BUY {trade.symbol}: {trade.quantity:.6f} @ ${current_price:.2f}")
+                elif trade.action == 'SELL':
+                    # execute_sell takes: symbol, current_price, sell_pct (default 100)
+                    result = engine.execute_sell(
+                        symbol=trade.symbol,
+                        current_price=current_price,
+                        sell_pct=100
+                    )
+                    if result:
+                        trade.status = ProposalStatus.EXECUTED.value
+                        trade.quantity = result.quantity
+                        trade.price = current_price
+                        db.session.commit()
+                        print(f"[Trade] Executed SELL {trade.symbol}: {trade.quantity:.6f} @ ${current_price:.2f}")
+            except Exception as e:
+                print(f"[Trade] Execution error: {e}")
+                import traceback
+                traceback.print_exc()
+            
             return trade
         return None
     

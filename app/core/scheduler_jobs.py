@@ -5,6 +5,7 @@ Defines the background tasks that run at intervals.
 from app.extensions import db
 from app.agents.strategist import Strategist
 from app.agents.paper_trading import PaperTradingEngine
+from app.agents.proposals import ProposalManager
 from datetime import datetime
 
 
@@ -52,10 +53,14 @@ def scan_market(app):
             
             if proposals:
                 print(f"\n📋 Proposals generated:")
+                proposal_manager = ProposalManager()
                 for i, proposal in enumerate(proposals, 1):
                     print(f"  {i}. {proposal.action} {proposal.symbol} @ ${proposal.current_price:,.2f}")
                     print(f"     Reason: {proposal.reasoning[:80]}...")
                     print(f"     Confidence: {proposal.confidence:.0%}")
+                    # Save to database for Trade Queue
+                    trade = proposal_manager.create_proposal(proposal)
+                    print(f"     💾 Saved as Trade #{trade.id}")
                 # TODO: Send to Telegram for approval
             else:
                 print(f"\n😴 No strong signals. Monty is watching...")
@@ -82,13 +87,53 @@ def register_jobs(scheduler, app):
     """
     Register all scheduled jobs.
     """
-    # Scan every 5 minutes
+    global _app, _scheduler
+    _app = app
+    _scheduler = scheduler
+    
+    # Get interval from settings
+    with app.app_context():
+        from app.models import Settings
+        settings = Settings.get_settings()
+        interval = settings.scan_interval_minutes
+    
+    # Scan at configured interval
     scheduler.add_job(
         id='market_scan',
         func=scan_market,
         args=[app],
         trigger='interval',
-        minutes=5,
+        minutes=interval,
         replace_existing=True
     )
-    print("📅 Scheduled: market_scan (every 5 minutes)")
+    print(f"📅 Scheduled: market_scan (every {interval} minutes)")
+
+
+# Global references for rescheduling
+_app = None
+_scheduler = None
+
+
+def reschedule_scan(new_interval_minutes: int):
+    """Reschedule the market scan job with a new interval."""
+    global _app, _scheduler
+    
+    if not _scheduler or not _app:
+        print("[Scheduler] Cannot reschedule: scheduler not initialized")
+        return
+    
+    # Remove existing job and add with new interval
+    try:
+        _scheduler.remove_job('market_scan')
+    except:
+        pass  # Job might not exist
+    
+    _scheduler.add_job(
+        id='market_scan',
+        func=scan_market,
+        args=[_app],
+        trigger='interval',
+        minutes=new_interval_minutes,
+        replace_existing=True
+    )
+    print(f"📅 Rescheduled: market_scan (every {new_interval_minutes} minutes)")

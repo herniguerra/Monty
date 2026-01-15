@@ -42,6 +42,9 @@
                 <a class="nav-item" data-page="logs">
                     <span>📜</span> Logs
                 </a>
+                <a class="nav-item" data-page="settings">
+                    <span>🔧</span> Settings
+                </a>
             </nav>
         </aside>
 
@@ -110,20 +113,7 @@
                     </div>
                 </div>
 
-                <!-- Trade Queue View (hidden by default) -->
-                <div id="trades-view" style="display: none;">
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">Trade Queue</span>
-                        </div>
-                        <div class="trade-queue" id="trade-queue-full">
-                            <div class="empty-state">
-                                <div class="empty-state-icon">📭</div>
-                                <div class="empty-state-text">No pending trades</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+
 
                 <!-- Positions View (hidden by default) -->
                 <div id="positions-view" style="display: none;">
@@ -253,6 +243,60 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Settings View (hidden by default) -->
+                <div id="settings-view" style="display: none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Application Settings</span>
+                        </div>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label for="scan-interval">Scan Frequency</label>
+                                <select id="scan-interval" class="form-select">
+                                    <option value="1">Every 1 minute</option>
+                                    <option value="5" selected>Every 5 minutes</option>
+                                    <option value="15">Every 15 minutes</option>
+                                    <option value="30">Every 30 minutes</option>
+                                </select>
+                                <span class="form-hint">How often Monty scans for trading opportunities</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="initial-balance">Initial Balance ($)</label>
+                                <input type="number" id="initial-balance" class="form-input" value="10000" min="100"
+                                    step="100">
+                                <span class="form-hint">Starting capital for paper trading (used on reset)</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="trade-expiry">Trade Expiry</label>
+                                <select id="trade-expiry" class="form-select">
+                                    <option value="15">15 minutes</option>
+                                    <option value="30" selected>30 minutes</option>
+                                    <option value="60">1 hour</option>
+                                    <option value="120">2 hours</option>
+                                </select>
+                                <span class="form-hint">How long pending trades wait for approval</span>
+                            </div>
+                            <div class="form-actions">
+                                <button class="btn btn-primary" onclick="saveSettings()">💾 Save Settings</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card" style="margin-top: 24px;">
+                        <div class="card-header">
+                            <span class="card-title">Danger Zone</span>
+                        </div>
+                        <div class="settings-form">
+                            <p style="color: var(--text-secondary); margin-bottom: 16px;">
+                                This will wipe all trades, positions, and reset your cash balance to the initial
+                                balance.
+                                This action cannot be undone.
+                            </p>
+                            <button class="btn btn-danger" onclick="showResetModal()">🗑️ Reset Portfolio</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
@@ -267,6 +311,31 @@
             </div>
             <div class="modal-body" id="context-modal-body">
                 Loading...
+            </div>
+        </div>
+    </div>
+
+    <!-- Reset Confirmation Modal -->
+    <div id="reset-modal" class="modal" style="display: none;">
+        <div class="modal-overlay" onclick="closeResetModal()"></div>
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3>⚠️ Reset Portfolio</h3>
+                <button class="btn" onclick="closeResetModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 16px;">Are you sure you want to reset? This will:</p>
+                <ul style="margin-bottom: 16px; padding-left: 20px;">
+                    <li>Delete all trade proposals</li>
+                    <li>Close all positions</li>
+                    <li>Wipe trade history</li>
+                    <li>Reset balance to initial capital</li>
+                </ul>
+                <p style="color: var(--danger); font-weight: 500;">This action cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeResetModal()">Cancel</button>
+                <button class="btn btn-danger" onclick="resetPortfolio()">🗑️ Yes, Reset</button>
             </div>
         </div>
     </div>
@@ -292,9 +361,20 @@
                 'trades': 'Trade Queue',
                 'positions': 'Positions',
                 'strategies': 'Strategies',
-                'logs': 'Activity Log'
+                'logs': 'Activity Log',
+                'settings': 'Settings'
             };
             document.getElementById('page-title').textContent = titles[page] || 'Dashboard';
+
+            // Load page-specific data
+            if (page === 'trades') {
+                loadPendingTrades();
+                loadTradeHistory();
+            } else if (page === 'positions') {
+                loadPositions();
+            } else if (page === 'settings') {
+                loadSettings();
+            }
         }
 
         // Click handlers for nav
@@ -312,8 +392,28 @@
 
         // Refresh data
         async function refreshData() {
+            // Show loading spinners immediately
+            const statIds = ['portfolio-value', 'total-pnl', 'open-positions', 'pending-trades'];
+            const changeId = 'portfolio-change';
+
+            statIds.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.innerHTML = '<span class="spinner"></span>';
+                    el.classList.add('loading');
+                }
+            });
+
+            const changeEl = document.getElementById(changeId);
+            if (changeEl) {
+                changeEl.innerHTML = '<span class="spinner spinner-sm"></span>';
+                changeEl.classList.add('loading');
+            }
+
             try {
-                const response = await fetch('/api/portfolio');
+                // Fetch data and enforce minimum spinner display time (300ms)
+                const minDisplayTime = new Promise(resolve => setTimeout(resolve, 300));
+                const [response] = await Promise.all([fetch('/api/portfolio'), minDisplayTime]);
                 const data = await response.json();
 
                 // Defensive defaults
@@ -322,17 +422,110 @@
                 const pnlPct = data.pnl_pct ?? 0;
                 const positions = data.positions ?? {};
 
-                // Update stats
-                document.getElementById('portfolio-value').textContent = `$${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
-                document.getElementById('total-pnl').textContent = `$${pnl.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
-                document.getElementById('total-pnl').className = `stat-value ${pnl >= 0 ? 'positive' : 'negative'}`;
-                document.getElementById('portfolio-change').textContent = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
-                document.getElementById('portfolio-change').className = `stat-change ${pnlPct >= 0 ? 'positive' : 'negative'}`;
-                document.getElementById('open-positions').textContent = Object.keys(positions).length;
+                // Update stats (remove loading state)
+                const portfolioEl = document.getElementById('portfolio-value');
+                portfolioEl.textContent = `$${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+                portfolioEl.classList.remove('loading');
+
+                const pnlEl = document.getElementById('total-pnl');
+                pnlEl.textContent = `$${pnl.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+                pnlEl.className = `stat-value ${pnl >= 0 ? 'positive' : 'negative'}`;
+
+                const changeElUpdate = document.getElementById('portfolio-change');
+                changeElUpdate.textContent = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
+                changeElUpdate.className = `stat-change ${pnlPct >= 0 ? 'positive' : 'negative'}`;
+
+                const positionsEl = document.getElementById('open-positions');
+                positionsEl.textContent = Object.keys(positions).length;
+                positionsEl.classList.remove('loading');
+
+                const pendingEl = document.getElementById('pending-trades');
+                pendingEl.classList.remove('loading');
+                // Pending trades count will be updated by loadPendingTradesCount
 
                 addLog('Data refreshed', 'success');
+
+                // Also fetch pending trades count
+                loadPendingTradesCount();
             } catch (e) {
+                // Remove loading state on error
+                statIds.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.textContent = '—';
+                        el.classList.remove('loading');
+                    }
+                });
+                if (changeEl) {
+                    changeEl.textContent = '—';
+                    changeEl.classList.remove('loading');
+                }
                 addLog(`Refresh failed: ${e.message}`, 'error');
+            }
+        }
+
+        // Load pending trades count for dashboard stat
+        async function loadPendingTradesCount() {
+            try {
+                const response = await fetch('/api/trades/pending');
+                const data = await response.json();
+                const count = data.trades?.length ?? 0;
+                document.getElementById('pending-trades').textContent = count;
+            } catch (e) {
+                document.getElementById('pending-trades').textContent = '0';
+            }
+        }
+
+        // Load positions into the Positions page table
+        async function loadPositions() {
+            try {
+                const response = await fetch('/api/portfolio');
+                const data = await response.json();
+                const positions = data.positions || {};
+                const tbody = document.getElementById('positions-table-body');
+
+                if (Object.keys(positions).length === 0) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="6" style="text-align: center; color: var(--text-muted);">
+                                No open positions
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                tbody.innerHTML = Object.entries(positions).map(([symbol, pos]) => {
+                    const pnlClass = (pos.pnl || 0) >= 0 ? 'positive' : 'negative';
+                    const pnlSign = (pos.pnl || 0) >= 0 ? '+' : '';
+                    return `
+                        <tr>
+                            <td><strong>${symbol}</strong></td>
+                            <td>$${pos.entry_price?.toFixed(2) || 'N/A'}</td>
+                            <td>${pos.quantity?.toFixed(6) || 'N/A'}</td>
+                            <td>$${pos.value?.toFixed(2) || 'N/A'}</td>
+                            <td class="${pnlClass}">
+                                ${pnlSign}$${(pos.pnl || 0).toFixed(2)} (${pnlSign}${(pos.pnl_pct || 0).toFixed(2)}%)
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-danger" onclick="proposeSell('${symbol}')">Sell</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to load positions:', e);
+            }
+        }
+
+        // Helper to propose a sell via chat
+        function proposeSell(symbol) {
+            // Navigate to chat and auto-fill sell message
+            showPage('chat');
+            const input = document.getElementById('chat-input');
+            if (input) {
+                input.value = `sell my ${symbol.split('/')[0]} position`;
+                input.focus();
             }
         }
 
@@ -408,54 +601,196 @@
             addChatMessage('user', message);
             input.value = '';
 
-            // Show loading indicator
+            // Create streaming assistant bubble
             chatLoading = true;
-            const loadingId = addChatMessage('assistant', '🎩 Thinking...', true);
+            const streamingBubble = createStreamingBubble();
+            let fullText = '';
+            let tradeProposal = null;
 
             try {
-                const response = await fetch('/api/chat', {
+                const response = await fetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message })
                 });
-                const data = await response.json();
 
-                // Remove ALL loading messages (aggressive cleanup)
-                document.querySelectorAll('.chat-message[data-loading="true"]').forEach(el => {
-                    console.log('[Chat] Removing loading message by data-attr');
-                    el.remove();
-                });
-                // Also try by ID as fallback
-                const loadingEl = document.getElementById(loadingId);
-                if (loadingEl) {
-                    console.log('[Chat] Removing loading message by ID:', loadingId);
-                    loadingEl.remove();
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // Parse SSE events from buffer
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+
+                        try {
+                            const event = JSON.parse(line.slice(6));
+
+                            if (event.type === 'text') {
+                                fullText += event.delta;
+                                updateStreamingBubble(streamingBubble, fullText);
+                            } else if (event.type === 'tool_call') {
+                                addThinkingStep(streamingBubble, 'tool_call', event);
+                            } else if (event.type === 'tool_result') {
+                                addThinkingStep(streamingBubble, 'tool_result', event);
+                            } else if (event.type === 'done') {
+                                // Capture trade proposal from done event
+                                if (event.trade_proposal) {
+                                    tradeProposal = event.trade_proposal;
+                                }
+                                finalizeStreamingBubble(streamingBubble, fullText);
+                            } else if (event.type === 'error') {
+                                fullText += `\n\nError: ${event.message}`;
+                                finalizeStreamingBubble(streamingBubble, fullText);
+                            }
+                        } catch (parseErr) {
+                            console.warn('[Chat] Failed to parse SSE event:', line);
+                        }
+                    }
                 }
 
-                // Show tool calls if any
-                if (data.tool_calls && data.tool_calls.length > 0) {
-                    const toolsHtml = data.tool_calls.map(tc =>
-                        `<span class="tool-badge">🔧 ${tc.tool}</span>`
-                    ).join(' ');
-                    addToolCallsMessage(toolsHtml);
-                }
+                // Final cleanup if no done event received
+                finalizeStreamingBubble(streamingBubble, fullText || 'No response received.');
 
-                // Add response
-                addChatMessage('assistant', data.response);
-
-                // If a trade was proposed, add inline approval buttons
-                if (data.trade_proposal && data.trade_proposal.trade_id) {
-                    const tradeId = data.trade_proposal.trade_id;
-                    addTradeApprovalButtons(tradeId);
+                // Add trade approval buttons if applicable
+                if (tradeProposal && tradeProposal.trade_id) {
+                    addTradeApprovalButtons(tradeProposal.trade_id);
                 }
 
             } catch (e) {
-                // Remove ALL loading messages on error too
-                document.querySelectorAll('.chat-message[data-loading="true"]').forEach(el => el.remove());
-                addChatMessage('assistant', `Sorry, something went wrong: ${e.message}`);
+                console.error('[Chat] Stream error:', e);
+                finalizeStreamingBubble(streamingBubble, `Sorry, something went wrong: ${e.message}`);
             }
 
             chatLoading = false;
+        }
+
+        function createStreamingBubble() {
+            const messagesContainer = document.getElementById('chat-messages');
+            const msgId = 'msg-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'chat-message assistant';
+            msgDiv.id = msgId;
+
+            msgDiv.innerHTML = `
+                <div class="chat-avatar">🎩</div>
+                <div class="chat-content-wrapper">
+                    <div class="thinking-section loading" id="thinking-${msgId}">
+                        <button class="thinking-toggle" onclick="toggleThinking('${msgId}')">
+                            <span class="thinking-toggle-icon">▶</span>
+                            <span>Thinking...</span>
+                        </button>
+                        <div class="thinking-content"></div>
+                    </div>
+                    <div class="chat-bubble streaming"><span class="stream-cursor">▌</span></div>
+                </div>
+            `;
+
+            messagesContainer.appendChild(msgDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            return msgDiv;
+        }
+
+        function toggleThinking(msgId) {
+            const section = document.getElementById(`thinking-${msgId}`);
+            if (section) {
+                section.classList.toggle('expanded');
+            }
+        }
+
+        function addThinkingStep(bubble, type, data) {
+            const thinkingContent = bubble.querySelector('.thinking-content');
+            if (!thinkingContent) return;
+
+            const step = document.createElement('div');
+            step.className = 'thinking-step';
+
+            if (type === 'tool_call') {
+                step.innerHTML = `
+                    <span class="thinking-step-icon">🔧</span>
+                    <div>
+                        <span class="thinking-step-tool">${data.tool}</span>
+                        <span style="color: var(--text-muted); font-size: 11px;">(${Object.keys(data.args || {}).join(', ') || 'no args'})</span>
+                    </div>
+                `;
+            } else if (type === 'tool_result') {
+                // Find the last step and add result to it
+                const lastStep = thinkingContent.querySelector('.thinking-step:last-child');
+                if (lastStep) {
+                    const resultDiv = document.createElement('div');
+                    resultDiv.className = 'thinking-step-result';
+                    const preview = typeof data.result === 'string'
+                        ? data.result.slice(0, 200)
+                        : JSON.stringify(data.result, null, 2).slice(0, 200);
+                    resultDiv.textContent = preview + (preview.length >= 200 ? '...' : '');
+                    lastStep.appendChild(resultDiv);
+                    return;
+                }
+            }
+
+            thinkingContent.appendChild(step);
+
+            // Update toggle text with count
+            const toggle = bubble.querySelector('.thinking-toggle span:last-child');
+            const stepCount = thinkingContent.querySelectorAll('.thinking-step').length;
+            if (toggle) {
+                toggle.textContent = `Thinking... (${stepCount} tool${stepCount > 1 ? 's' : ''})`;
+            }
+        }
+
+        function finalizeThinkingSection(bubble) {
+            const thinkingSection = bubble.querySelector('.thinking-section');
+            if (!thinkingSection) return;
+
+            thinkingSection.classList.remove('loading');
+
+            const stepCount = thinkingSection.querySelectorAll('.thinking-step').length;
+            const toggle = thinkingSection.querySelector('.thinking-toggle span:last-child');
+
+            if (stepCount === 0) {
+                // No tools called, hide the thinking section
+                thinkingSection.style.display = 'none';
+            } else if (toggle) {
+                toggle.textContent = `${stepCount} tool${stepCount > 1 ? 's' : ''} used`;
+            }
+        }
+
+        function updateStreamingBubble(bubble, text) {
+            const contentBubble = bubble.querySelector('.chat-bubble');
+            if (!contentBubble) return;
+            let formattedContent = formatChatContent(text);
+            contentBubble.innerHTML = formattedContent + '<span class="stream-cursor">▌</span>';
+
+            const messagesContainer = document.getElementById('chat-messages');
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function finalizeStreamingBubble(bubble, text) {
+            const contentBubble = bubble.querySelector('.chat-bubble');
+            if (!contentBubble) return;
+            contentBubble.classList.remove('streaming');
+            contentBubble.innerHTML = formatChatContent(text);
+
+            // Also finalize thinking section
+            finalizeThinkingSection(bubble);
+        }
+
+        function formatChatContent(content) {
+            return content
+                .replace(/\n/g, '<br>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/`(.+?)`/g, '<code>$1</code>');
         }
 
         function addToolCallsMessage(toolsHtml) {
@@ -726,12 +1061,17 @@
             }
         }
 
-        async function approveTrade(tradeId) {
+        async function approveTrade(tradeId, injectMessage = false) {
             try {
                 const response = await fetch(`/api/trades/${tradeId}/approve`, { method: 'POST' });
                 const data = await response.json();
 
                 if (data.status === 'approved') {
+                    // Inject user message to chat history if requested
+                    if (injectMessage) {
+                        await injectUserActionToChat(`I approve trade #${tradeId}`);
+                    }
+
                     // Update UI
                     const tradeCard = document.getElementById(`trade-${tradeId}`);
                     if (tradeCard) {
@@ -749,12 +1089,17 @@
             }
         }
 
-        async function rejectTrade(tradeId) {
+        async function rejectTrade(tradeId, injectMessage = false) {
             try {
                 const response = await fetch(`/api/trades/${tradeId}/reject`, { method: 'POST' });
                 const data = await response.json();
 
                 if (data.status === 'rejected') {
+                    // Inject user message to chat history if requested
+                    if (injectMessage) {
+                        await injectUserActionToChat(`I reject trade #${tradeId}`);
+                    }
+
                     const tradeCard = document.getElementById(`trade-${tradeId}`);
                     if (tradeCard) {
                         tradeCard.remove();
@@ -790,6 +1135,9 @@
                         loadTradeHistory();
                     }, 100);
                 }
+                if (item.dataset.page === 'positions') {
+                    setTimeout(loadPositions, 100);
+                }
             });
         });
 
@@ -812,7 +1160,10 @@
             const container = document.getElementById(`inline-trade-${tradeId}`);
             if (container) container.innerHTML = '<span style="color: var(--success);">⏳ Executing...</span>';
 
-            await approveTrade(tradeId);
+            // Add user message to chat
+            addChatMessage('user', `I approve trade #${tradeId}`);
+
+            await approveTrade(tradeId, true);
 
             if (container) container.innerHTML = '<span style="color: var(--success);">✓ Approved & Executed</span>';
         }
@@ -820,7 +1171,93 @@
         async function rejectTradeInline(tradeId) {
             const container = document.getElementById(`inline-trade-${tradeId}`);
             if (container) container.innerHTML = '<span style="color: var(--text-muted);">✕ Rejected</span>';
-            await rejectTrade(tradeId);
+
+            // Add user message to chat
+            addChatMessage('user', `I reject trade #${tradeId}`);
+
+            await rejectTrade(tradeId, true);
+        }
+
+        // Inject user action as a message in chat history (server-side)
+        async function injectUserActionToChat(message) {
+            try {
+                await fetch('/api/chat/inject', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message, role: 'user' })
+                });
+            } catch (e) {
+                console.log('[Chat] Failed to inject message:', e);
+            }
+        }
+
+        // ===== SETTINGS FUNCTIONS =====
+
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                const data = await response.json();
+
+                document.getElementById('scan-interval').value = data.scan_interval_minutes;
+                document.getElementById('initial-balance').value = data.initial_balance;
+                document.getElementById('trade-expiry').value = data.trade_expiry_minutes;
+            } catch (e) {
+                console.error('Failed to load settings:', e);
+            }
+        }
+
+        async function saveSettings() {
+            try {
+                const settings = {
+                    scan_interval_minutes: parseInt(document.getElementById('scan-interval').value),
+                    initial_balance: parseFloat(document.getElementById('initial-balance').value),
+                    trade_expiry_minutes: parseInt(document.getElementById('trade-expiry').value)
+                };
+
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+                const data = await response.json();
+
+                if (data.status === 'updated') {
+                    addLog(`Settings saved: scan every ${data.scan_interval_minutes} min`, 'success');
+                    alert('Settings saved successfully!');
+                } else {
+                    addLog('Failed to save settings', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to save settings:', e);
+                addLog(`Settings error: ${e.message}`, 'error');
+            }
+        }
+
+        function showResetModal() {
+            document.getElementById('reset-modal').style.display = 'flex';
+        }
+
+        function closeResetModal() {
+            document.getElementById('reset-modal').style.display = 'none';
+        }
+
+        async function resetPortfolio() {
+            closeResetModal();
+            try {
+                const response = await fetch('/api/reset', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.status === 'reset') {
+                    addLog(`Portfolio reset to $${data.initial_balance.toLocaleString()}`, 'success');
+                    alert('Portfolio has been reset!');
+                    refreshData();  // Refresh dashboard stats
+                } else {
+                    addLog('Reset failed: ' + (data.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                console.error('Failed to reset portfolio:', e);
+                addLog(`Reset error: ${e.message}`, 'error');
+            }
         }
     </script>
 </body>

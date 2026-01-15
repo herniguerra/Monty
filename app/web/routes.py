@@ -69,24 +69,6 @@ def trigger_scan():
         })
 
 
-@bp.route('/api/trades/pending')
-def get_pending_trades():
-    """Get all pending trade proposals."""
-    from app.agents.proposals import ProposalManager
-    try:
-        manager = ProposalManager()
-        trades = manager.get_pending_proposals()
-        return jsonify([{
-            'id': t.id,
-            'symbol': t.symbol,
-            'action': t.action,
-            'price': t.price,
-            'status': t.status,
-            'strategy': t.strategy,
-            'reasoning': t.reasoning
-        } for t in trades])
-    except Exception as e:
-        return jsonify([])
 
 
 @bp.route('/api/trades/<int:trade_id>/approve', methods=['POST'])
@@ -168,6 +150,54 @@ def reject_all_trades():
 
 # ===== CHAT API =====
 
+@bp.route('/api/chat/stream', methods=['POST'])
+def chat_stream():
+    """Stream chat response via Server-Sent Events."""
+    import json
+    from flask import Response, stream_with_context
+    from app.core.chat_engine import get_chat_engine
+    
+    data = request.get_json()
+    user_message = data.get('message', '').strip()
+    
+    if not user_message:
+        return jsonify({'error': 'Message is required'}), 400
+    
+    def generate():
+        try:
+            engine = get_chat_engine()
+            trade_proposal = None
+            
+            for event in engine.chat_stream(user_message):
+                # Check for trade proposals in tool calls
+                if event.get('type') == 'tool_result':
+                    result = event.get('result', {})
+                    if event.get('tool') == 'propose_trade' and result.get('status') == 'proposed':
+                        trade_proposal = {
+                            'trade_id': result.get('trade_id'),
+                            'message': result.get('message')
+                        }
+                
+                # Add trade_proposal to done event
+                if event.get('type') == 'done' and trade_proposal:
+                    event['trade_proposal'] = trade_proposal
+                
+                yield f"data: {json.dumps(event)}\n\n"
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no'  # Disable nginx buffering
+        }
+    )
+
 @bp.route('/api/chat', methods=['POST'])
 def chat():
     """Send a message to Monty and get a response."""
@@ -238,6 +268,27 @@ def clear_chat():
         engine = get_chat_engine()
         engine.clear_history()
         return jsonify({'status': 'cleared'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/chat/inject', methods=['POST'])
+def inject_chat_message():
+    """Inject a message into chat history (for recording user actions like approve/reject)."""
+    try:
+        from app.core.chat_engine import get_chat_engine
+        
+        data = request.get_json()
+        message = data.get('message', '').strip()
+        role = data.get('role', 'user')
+        
+        if not message:
+            return jsonify({'error': 'Message is required'}), 400
+        
+        engine = get_chat_engine()
+        engine.add_message(role, message)
+        
+        return jsonify({'status': 'injected', 'role': role, 'message': message})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -334,4 +385,102 @@ def export_chat():
             'path': filepath
         })
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ===== SETTINGS API =====
+
+@bp.route('/api/settings')
+def get_settings():
+    """Get current application settings."""
+    from app.models import Settings
+    settings = Settings.get_settings()
+    return jsonify({
+        'scan_interval_minutes': settings.scan_interval_minutes,
+        'initial_balance': settings.initial_balance,
+        'trade_expiry_minutes': settings.trade_expiry_minutes
+    })
+
+
+@bp.route('/api/settings', methods=['POST'])
+def update_settings():
+    """Update application settings."""
+    from app.models import Settings
+    from app.extensions import db
+    
+    data = request.get_json() or {}
+    settings = Settings.get_settings()
+    
+    if 'scan_interval_minutes' in data:
+        settings.scan_interval_minutes = int(data['scan_interval_minutes'])
+    if 'initial_balance' in data:
+        settings.initial_balance = float(data['initial_balance'])
+    if 'trade_expiry_minutes' in data:
+        settings.trade_expiry_minutes = int(data['trade_expiry_minutes'])
+    
+    db.session.commit()
+    
+    # Reschedule the scanner job with new interval
+    try:
+        from app.core.scheduler_jobs import reschedule_scan
+        reschedule_scan(settings.scan_interval_minutes)
+    except Exception as e:
+        print(f"[Settings] Could not reschedule scanner: {e}")
+    
+    return jsonify({
+        'status': 'updated',
+        'scan_interval_minutes': settings.scan_interval_minutes,
+        'initial_balance': settings.initial_balance,
+        'trade_expiry_minutes': settings.trade_expiry_minutes
+    })
+
+
+@bp.route('/api/reset', methods=['POST'])
+def reset_portfolio():
+    """Reset portfolio: wipe all trades, positions, and reset cash balance."""
+    from app.models import Trade, Position, ExecutedTrade, PortfolioState, Settings
+    from app.extensions import db
+    from app.core.scheduler_jobs import get_paper_engine
+    from datetime import datetime
+    
+    try:
+        # Get initial balance from settings
+        settings = Settings.get_settings()
+        initial_balance = settings.initial_balance
+        
+        # Clear all trades
+        Trade.query.delete()
+        
+        # Clear all positions
+        Position.query.delete()
+        
+        # Clear executed trades
+        ExecutedTrade.query.delete()
+        
+        # Reset portfolio state
+        PortfolioState.query.delete()
+        new_state = PortfolioState(
+            cash_balance=initial_balance,
+            initial_balance=initial_balance,
+            start_time=datetime.utcnow()
+        )
+        db.session.add(new_state)
+        db.session.commit()
+        
+        # Reset the in-memory paper engine
+        paper_engine = get_paper_engine()
+        paper_engine.cash = initial_balance
+        paper_engine.initial_balance = initial_balance
+        paper_engine.positions = {}
+        paper_engine.trade_history = []
+        paper_engine._save_to_db()
+        
+        return jsonify({
+            'status': 'reset',
+            'message': 'Portfolio reset successfully',
+            'initial_balance': initial_balance
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
